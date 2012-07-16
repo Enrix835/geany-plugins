@@ -167,9 +167,20 @@ static void save_recent_paste(const gchar *f_name, const gchar *p_url)
     
     g_key_file_load_from_file(config, config_file, G_KEY_FILE_NONE, NULL);
 
+    /* every 10 pastes reset the paste count to 1 */
     if(p_number > MAX_RECENT_PASTES)
         p_number = 1;
     
+    /* store the last recent pastes in the configuration menu and
+     * every new link will be stored following this format:
+     * 
+     * paste_1=%filename;%url
+     * paste_2=%filename;%url
+     * 
+     * Since the key names are always in that format and the number that
+     * identify the keys increments everytime a new file is sent to the 
+     * pastebin it's easy to overwrite the old pastes.
+     */
     SETPTR(p_name_number, g_strdup_printf("paste_%d", p_number));
     SETPTR(p_name_url, g_strdup_printf("%s;%s", f_name, p_url));
     
@@ -418,8 +429,7 @@ static void paste(GeanyDocument * doc, const gchar * website)
              * e.g. sprunge.us/xxxx?c
              */
             gchar *ft_tmp = g_ascii_strdown(f_type, -1);
-            gchar *temp_body = g_strstrip(p_url);
-            SETPTR(p_url, g_strdup_printf("%s?%s", temp_body, ft_tmp));
+            SETPTR(p_url, g_strdup_printf("%s?%s", g_strstrip(p_url), ft_tmp));
             g_free(ft_tmp);
         }
 
