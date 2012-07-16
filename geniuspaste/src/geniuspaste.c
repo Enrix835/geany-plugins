@@ -56,14 +56,13 @@
 #define DPASTE_DE 			3
 #define SPRUNGE_US 			4
 
+#define MAX_RECENT_PASTES 10
 #define DEFAULT_TYPE_CODEPAD langs_supported_codepad[8];
 #define DEFAULT_TYPE_DPASTE langs_supported_dpaste[15];
 
 GeanyPlugin *geany_plugin;
 GeanyData *geany_data;
 GeanyFunctions *geany_functions;
-
-static GtkWidget *main_menu_item = NULL;
 
 static const gchar *websites[] =
 {
@@ -90,10 +89,18 @@ static struct
     GtkWidget *author_entry;
 } widgets;
 
+static struct
+{
+    GtkWidget *paste_item;
+    GtkWidget *recent_item;
+    GtkWidget *recent_paste_item;
+} widgets_menu_item;
+
 static gchar *config_file = NULL;
 static gchar *author_name = NULL;
 
 static gint website_selected;
+static gint p_number = 0;
 static gboolean check_button_is_checked = FALSE;
 
 PLUGIN_VERSION_CHECK(147)
@@ -138,6 +145,40 @@ static void save_settings(void)
     {
         dialogs_show_msgbox(GTK_MESSAGE_ERROR,
                             _("Plugin configuration directory could not be created."));
+    }
+    else
+    {
+        data = g_key_file_to_data(config, NULL, NULL);
+        utils_write_file(config_file, data);
+        g_free(data);
+    }
+    
+    g_free(config_dir);
+    g_key_file_free(config);
+}
+
+static void save_recent_paste(const gchar *f_name, const gchar *p_url)
+{
+    GKeyFile * config = g_key_file_new();
+    gchar * data;
+    gchar *config_dir = g_path_get_dirname(config_file);
+    gchar *p_name_number = NULL;
+    gchar *p_name_url = NULL;
+    
+    g_key_file_load_from_file(config, config_file, G_KEY_FILE_NONE, NULL);
+
+    if(p_number > MAX_RECENT_PASTES)
+        p_number = 1;
+    
+    SETPTR(p_name_number, g_strdup_printf("paste_%d", p_number));
+    SETPTR(p_name_url, g_strdup_printf("%s;%s", f_name, p_url));
+    
+    g_key_file_set_string(config, "recent-pastes", p_name_number, p_name_url);
+    
+    if (! g_file_test(config_dir, G_FILE_TEST_IS_DIR) && utils_mkdir(config_dir, TRUE) != 0)
+    {
+        dialogs_show_msgbox(GTK_MESSAGE_ERROR,
+            _("Plugin configuration directory could not be created."));
     }
     else
     {
@@ -397,6 +438,9 @@ static void paste(GeanyDocument * doc, const gchar * website)
             gtk_dialog_run(GTK_DIALOG(dlg));
             gtk_widget_destroy(dlg);
         }
+        
+        p_number++;
+        save_recent_paste(f_title, p_url);
     }
     else
     {
@@ -436,6 +480,68 @@ static void on_configure_response(GtkDialog * dialog, gint response, gpointer * 
             save_settings();
         }
     }
+}
+
+void open_browser_callback(GtkMenuItem * menuitem, gpointer data)
+{
+    utils_open_browser((gchar *)data);
+}
+
+void update_menu_items(void) 
+{
+    gint i = 0;
+    gchar **p_urls = NULL;
+    gchar **p_title_link = NULL;
+    gsize length = 0;
+    gsize list_length = 0;
+    GError **error = NULL;
+    GError **error_l = NULL;
+    
+    GtkWidget *recent_menu;
+    GKeyFile *config = g_key_file_new();
+    
+    config_file = g_strconcat(geany->app->configdir, G_DIR_SEPARATOR_S, "plugins", G_DIR_SEPARATOR_S,
+        "geniuspaste", G_DIR_SEPARATOR_S, "geniuspaste.conf", NULL);
+    g_key_file_load_from_file(config, config_file, G_KEY_FILE_NONE, NULL);
+    
+    recent_menu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(widgets_menu_item.recent_item), recent_menu);
+    
+    if( ! g_key_file_has_group(config, "recent-pastes"))
+    {
+        widgets_menu_item.recent_paste_item = gtk_image_menu_item_new_with_mnemonic(_("No recent pastes"));
+        gtk_widget_show(widgets_menu_item.recent_paste_item);
+        gtk_container_add(GTK_CONTAINER(recent_menu),
+        widgets_menu_item.recent_paste_item);
+    }
+    else
+    {
+        p_urls = g_key_file_get_keys(config, "recent-pastes", &length, error);
+    
+        if(length != 0)
+        {
+            for(i = 0; i < length; i++) {
+                p_title_link = g_key_file_get_string_list(config, "recent-pastes", p_urls[i], &list_length, error_l);
+                
+                if(p_title_link)
+                {
+                    widgets_menu_item.recent_paste_item =
+                        gtk_image_menu_item_new_with_label(p_title_link[0]);
+                        
+                    g_signal_connect(widgets_menu_item.recent_paste_item, "activate",
+                        G_CALLBACK(open_browser_callback), p_title_link[1]);
+                        
+                    gtk_widget_show(widgets_menu_item.recent_paste_item);
+                    gtk_container_add(GTK_CONTAINER(recent_menu),
+                        widgets_menu_item.recent_paste_item);
+                }
+            }
+        }
+    }
+    
+    g_strfreev(p_title_link);
+    g_strfreev(p_urls);
+    g_key_file_free(config);
 }
 
 GtkWidget *plugin_configure(GtkDialog * dialog)
@@ -481,18 +587,28 @@ GtkWidget *plugin_configure(GtkDialog * dialog)
     return vbox;
 }
 
-static void add_menu_item(void)
+static void add_menu_item()
 {
-    GtkWidget *paste_item;
-
-    paste_item = gtk_menu_item_new_with_mnemonic(_("_Paste it!"));
-    gtk_widget_show(paste_item);
+    GtkWidget *recent_menu;
+    
+    widgets_menu_item.paste_item = gtk_menu_item_new_with_mnemonic(_("_Paste it!"));
+    gtk_widget_show(widgets_menu_item.paste_item);
     gtk_container_add(GTK_CONTAINER(geany->main_widgets->tools_menu),
-                      paste_item);
-    g_signal_connect(paste_item, "activate", G_CALLBACK(item_activate),
+                      widgets_menu_item.paste_item);
+    g_signal_connect(widgets_menu_item.paste_item, "activate", G_CALLBACK(item_activate),
                      NULL);
 
-    main_menu_item = paste_item;
+    widgets_menu_item.recent_item = gtk_image_menu_item_new_with_mnemonic(_("_Recent pastes"));
+	gtk_container_add(GTK_CONTAINER(geany->main_widgets->tools_menu),
+        widgets_menu_item.recent_item);
+
+	g_signal_connect((gpointer) widgets_menu_item.recent_item, "activate",
+        G_CALLBACK(update_menu_items), NULL);
+    
+    recent_menu = gtk_menu_new();
+    gtk_menu_item_set_submenu(GTK_MENU_ITEM(widgets_menu_item.recent_item), recent_menu);
+    
+    gtk_widget_show_all(widgets_menu_item.recent_item);
 }
 
 void plugin_init(GeanyData * data)
@@ -502,9 +618,10 @@ void plugin_init(GeanyData * data)
     add_menu_item();
 }
 
-
 void plugin_cleanup(void)
 {
     g_free(author_name);
-    gtk_widget_destroy(main_menu_item);
+    gtk_widget_destroy(widgets_menu_item.paste_item);
+    gtk_widget_destroy(widgets_menu_item.recent_item);
 }
+
